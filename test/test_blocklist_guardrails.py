@@ -1,8 +1,9 @@
 import tempfile
 import unittest
+import mcp.types as types
 from pathlib import Path
 
-from jmcp import check_config_blocklist
+from jmcp import check_config_blocklist, _is_error_content
 
 
 class BlocklistGuardrailsTests(unittest.TestCase):
@@ -99,6 +100,17 @@ class BlocklistGuardrailsTests(unittest.TestCase):
 
             self.assertFalse(blocked)
             self.assertIsNone(message)
+
+
+class ToolErrorClassificationTests(unittest.TestCase):
+    def test_blocked_message_is_error(self):
+        blocks = [
+            types.TextContent(
+                type="text",
+                text="Blocked configuration rejected: line 'x' matches blocked pattern 'y'",
+            )
+        ]
+        self.assertTrue(_is_error_content(blocks))
 
 
 if __name__ == "__main__":

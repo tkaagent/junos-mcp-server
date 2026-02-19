@@ -1535,6 +1535,27 @@ async def handle_load_and_commit_config(arguments: dict, context: Context) -> li
     return [content_block]
 
 
+def _is_error_content(content_blocks: list[types.ContentBlock]) -> bool:
+    """Best-effort detection of tool-level failures from text responses."""
+    error_prefixes = (
+        "error:",
+        "failed",
+        "connection error",
+        "an error occurred",
+        "❌",
+        "blocked configuration rejected",
+        "unknown tool",
+    )
+
+    for content in content_blocks:
+        if isinstance(content, types.TextContent):
+            message = content.text.strip().lower()
+            if message.startswith(error_prefixes):
+                return True
+
+    return False
+
+
 # Tool registry mapping tool names to their handler functions
 # To add a new tool:
 # 1. Create an async handler function: async def handle_my_new_tool(arguments: dict) -> list[types.ContentBlock]
@@ -1559,8 +1580,8 @@ def create_mcp_server() -> Server:
     app = Server(JUNOS_MCP, version="1.0.0")
     
     @app.call_tool()
-    async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
-        """Handle tool calls using the tool registry"""
+    async def call_tool(name: str, arguments: dict) -> types.CallToolResult:
+        """Handle tool calls using the tool registry."""
         handler = TOOL_HANDLERS.get(name)
         if handler:
             try:
@@ -1569,13 +1590,15 @@ def create_mcp_server() -> Server:
             except LookupError as e:
                 log.warning(f"LookupError getting request_context: {e}")
                 request_context = None
-            
+
             context = Context(request_context=request_context, fastmcp=app)
             log.info(f"Created context with request_context: {request_context is not None}")
-            
-            return await handler(arguments, context=context)
-        else:
-            return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+
+            content_blocks = await handler(arguments, context=context)
+            return types.CallToolResult(content=content_blocks, isError=_is_error_content(content_blocks))
+
+        content_blocks = [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+        return types.CallToolResult(content=content_blocks, isError=True)
 
     @app.list_resources()
     async def list_resources() -> list[types.Resource]:
