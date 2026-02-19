@@ -633,18 +633,21 @@ def check_config_blocklist(config_text: str, block_file: str = "block.cfg") -> t
     except OSError as e:
         return True, f"Error: unable to read blocklist file '{block_file}': {e}"
 
-    config_lines = [line.strip() for line in config_text.splitlines() if line.strip()]
+    raw_config_lines = [line.strip() for line in config_text.splitlines() if line.strip()]
+    normalized_config_lines = [" ".join(line.split()) for line in raw_config_lines]
 
     for pattern in blocked_patterns:
+        normalized_pattern = " ".join(pattern.split())
         try:
             compiled_pattern = re.compile(pattern)
+            compiled_normalized_pattern = re.compile(normalized_pattern)
         except re.error as e:
             return True, f"Error: invalid regex in '{block_file}': '{pattern}' ({e})"
 
-        for config_line in config_lines:
-            if compiled_pattern.match(config_line):
+        for raw_config_line, normalized_config_line in zip(raw_config_lines, normalized_config_lines):
+            if compiled_pattern.match(raw_config_line) or compiled_normalized_pattern.match(normalized_config_line):
                 return True, (
-                    f"Blocked configuration rejected: line '{config_line}' matches blocked pattern '{pattern}'"
+                    f"Blocked configuration rejected: line '{raw_config_line}' matches blocked pattern '{pattern}'"
                 )
 
     return False, None
@@ -1399,7 +1402,7 @@ async def handle_get_router_list(arguments: dict, context: Context) -> list[type
 async def handle_load_and_commit_config(arguments: dict, context: Context) -> list[types.ContentBlock]:
     """Handler for load_and_commit_config tool"""
     router_name = arguments.get("router_name", "")
-    config_text = arguments.get("config_text", "")
+    config_text = arguments.get("config_text", arguments.get("config", ""))
     config_format = arguments.get("config_format", "set")
     commit_comment = arguments.get("commit_comment", "Configuration loaded via MCP")
     timeout = get_timeout_with_fallback(arguments.get("timeout"))
