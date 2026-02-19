@@ -633,21 +633,29 @@ def check_config_blocklist(config_text: str, block_file: str = "block.cfg") -> t
     except OSError as e:
         return True, f"Error: unable to read blocklist file '{block_file}': {e}"
 
-    raw_config_lines = [line.strip() for line in config_text.splitlines() if line.strip()]
-    normalized_config_lines = [" ".join(line.split()) for line in raw_config_lines]
+    normalized_config_lines = [" ".join(line.split()) for line in config_text.splitlines() if line.strip()]
 
     for pattern in blocked_patterns:
         normalized_pattern = " ".join(pattern.split())
-        try:
-            compiled_pattern = re.compile(pattern)
-            compiled_normalized_pattern = re.compile(normalized_pattern)
-        except re.error as e:
-            return True, f"Error: invalid regex in '{block_file}': '{pattern}' ({e})"
 
-        for raw_config_line, normalized_config_line in zip(raw_config_lines, normalized_config_lines):
-            if compiled_pattern.match(raw_config_line) or compiled_normalized_pattern.match(normalized_config_line):
+        # Prefer least-token matching for wildcard forms commonly used in block.cfg.
+        # Example: `(.*)` should match one token (no spaces), equivalent to `([^ ]+)`.
+        if "(.*)" in normalized_pattern:
+            candidate_patterns = [normalized_pattern.replace("(.*)", "([^ ]+)")]
+        else:
+            candidate_patterns = [normalized_pattern]
+
+        compiled_patterns = []
+        for candidate_pattern in candidate_patterns:
+            try:
+                compiled_patterns.append(re.compile(rf"^(?:{candidate_pattern})(?:\s|$)"))
+            except re.error as e:
+                return True, f"Error: invalid regex in '{block_file}': '{pattern}' ({e})"
+
+        for config_line in normalized_config_lines:
+            if any(compiled_pattern.match(config_line) for compiled_pattern in compiled_patterns):
                 return True, (
-                    f"Blocked configuration rejected: line '{raw_config_line}' matches blocked pattern '{pattern}'"
+                    f"Blocked configuration rejected: line '{config_line}' matches blocked pattern '{pattern}'"
                 )
 
     return False, None
