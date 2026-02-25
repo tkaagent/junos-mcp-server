@@ -21,6 +21,7 @@ from __future__ import annotations as _annotations
 
 import argparse
 import time
+import re
 from datetime import datetime, timezone
 import logging
 import os
@@ -29,6 +30,7 @@ import json
 import yaml
 import sys
 import signal
+from pathlib import Path
 from typing import Any, Sequence
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 
@@ -616,6 +618,94 @@ def get_timeout_with_fallback(arguments_timeout: int = None) -> int:
             log.warning(f"Invalid JUNOS_TIMEOUT environment variable value: {env_timeout}. Using default timeout.")
 
     return 360
+
+
+def check_config_blocklist(config_text: str, block_file: str = "block.cfg") -> tuple[bool, str | None]:
+    """Return whether the submitted config should be blocked based on tokenized regex patterns."""
+    if not config_text:
+        return False, None
+
+    block_file_path = Path(block_file)
+    if not block_file_path.is_absolute() and not block_file_path.exists():
+        block_file_path = Path(__file__).resolve().parent / block_file
+
+    if not block_file_path.exists():
+        return True, f"Error: blocklist file '{block_file_path}' not found. Refusing to apply configuration."
+
+    try:
+        with open(block_file_path, "r", encoding="utf-8") as f:
+            blocked_patterns = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+    except OSError as e:
+        return True, f"Error: unable to read blocklist file '{block_file_path}': {e}"
+
+    config_lines = [" ".join(line.split()) for line in config_text.splitlines() if line.strip()]
+
+    def split_pattern_tokens(pattern_line: str) -> list[str]:
+        """Split pattern into tokens while preserving spaces inside regex char classes like `[^ ]+`."""
+        tokens: list[str] = []
+        current: list[str] = []
+        in_char_class = False
+        escaped = False
+
+        for ch in pattern_line:
+            if escaped:
+                current.append(ch)
+                escaped = False
+                continue
+
+            if ch == "\\":
+                current.append(ch)
+                escaped = True
+                continue
+
+            if ch == "[":
+                in_char_class = True
+                current.append(ch)
+                continue
+
+            if ch == "]" and in_char_class:
+                in_char_class = False
+                current.append(ch)
+                continue
+
+            if ch.isspace() and not in_char_class:
+                if current:
+                    tokens.append("".join(current))
+                    current = []
+                continue
+
+            current.append(ch)
+
+        if current:
+            tokens.append("".join(current))
+
+        return tokens
+
+    for pattern in blocked_patterns:
+        pattern_tokens = split_pattern_tokens(pattern)
+
+        for config_line in config_lines:
+            config_tokens = config_line.split()
+
+            # Prefix-style token match: all pattern tokens must match the first N config tokens.
+            if len(config_tokens) < len(pattern_tokens):
+                continue
+
+            token_match = True
+            for config_token, pattern_token in zip(config_tokens, pattern_tokens):
+                try:
+                    if not re.fullmatch(pattern_token, config_token):
+                        token_match = False
+                        break
+                except re.error as e:
+                    return True, f"Error: invalid regex in '{block_file_path}': '{pattern_token}' ({e})"
+
+            if token_match:
+                return True, (
+                    f"Blocked configuration rejected: line '{config_line}' matches blocked pattern '{pattern}'"
+                )
+
+    return False, None
 
 def validate_token_from_file(token: str) -> bool:
     """Validate if a token exists in the .tokens file"""
@@ -1367,12 +1457,15 @@ async def handle_get_router_list(arguments: dict, context: Context) -> list[type
 async def handle_load_and_commit_config(arguments: dict, context: Context) -> list[types.ContentBlock]:
     """Handler for load_and_commit_config tool"""
     router_name = arguments.get("router_name", "")
-    config_text = arguments.get("config_text", "")
+    config_text = arguments.get("config_text", arguments.get("config", ""))
     config_format = arguments.get("config_format", "set")
     commit_comment = arguments.get("commit_comment", "Configuration loaded via MCP")
     timeout = get_timeout_with_fallback(arguments.get("timeout"))
-    
-    if router_name not in devices:
+
+    is_blocked, blocked_message = check_config_blocklist(config_text)
+    if is_blocked:
+        result = blocked_message
+    elif router_name not in devices:
         result = f"Router {router_name} not found in the device mapping."
     else:
         log.debug(f"Loading and committing config on router {router_name} with format {config_format}")
@@ -1442,6 +1535,27 @@ async def handle_load_and_commit_config(arguments: dict, context: Context) -> li
     return [content_block]
 
 
+def _is_error_content(content_blocks: list[types.ContentBlock]) -> bool:
+    """Best-effort detection of tool-level failures from text responses."""
+    error_prefixes = (
+        "error:",
+        "failed",
+        "connection error",
+        "an error occurred",
+        "❌",
+        "blocked configuration rejected",
+        "unknown tool",
+    )
+
+    for content in content_blocks:
+        if isinstance(content, types.TextContent):
+            message = content.text.strip().lower()
+            if message.startswith(error_prefixes):
+                return True
+
+    return False
+
+
 # Tool registry mapping tool names to their handler functions
 # To add a new tool:
 # 1. Create an async handler function: async def handle_my_new_tool(arguments: dict) -> list[types.ContentBlock]
@@ -1466,8 +1580,8 @@ def create_mcp_server() -> Server:
     app = Server(JUNOS_MCP, version="1.0.0")
     
     @app.call_tool()
-    async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
-        """Handle tool calls using the tool registry"""
+    async def call_tool(name: str, arguments: dict) -> types.CallToolResult:
+        """Handle tool calls using the tool registry."""
         handler = TOOL_HANDLERS.get(name)
         if handler:
             try:
@@ -1476,13 +1590,15 @@ def create_mcp_server() -> Server:
             except LookupError as e:
                 log.warning(f"LookupError getting request_context: {e}")
                 request_context = None
-            
+
             context = Context(request_context=request_context, fastmcp=app)
             log.info(f"Created context with request_context: {request_context is not None}")
-            
-            return await handler(arguments, context=context)
-        else:
-            return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+
+            content_blocks = await handler(arguments, context=context)
+            return types.CallToolResult(content=content_blocks, isError=_is_error_content(content_blocks))
+
+        content_blocks = [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+        return types.CallToolResult(content=content_blocks, isError=True)
 
     @app.list_resources()
     async def list_resources() -> list[types.Resource]:
