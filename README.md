@@ -123,6 +123,14 @@ options:
 
 Junos MCP server supports both streamable-http and stdio transport. Do not use --host with stdio transport.
 
+### Environment Variables
+
+- `JUNOS_TIMEOUT`: Command timeout in seconds for Junos CLI operations.
+- `JMCP_STATELESS`: Controls streamable-http session mode.
+  - Default: `false` (stateful sessions, required for elicitation workflows such as `add_device`).
+  - Accepted true values: `1`, `true`, `yes`, `y`, `on`
+  - Accepted false values: `0`, `false`, `no`, `n`, `off`
+
 ## Configuration
 
 ### Config for Claude Desktop (stdio transport)
@@ -207,6 +215,11 @@ $ docker run --rm -it -v /path/to/your/devices.json:/app/config/devices.json jun
 **For streamable-http transport:**
 ```bash
 $ docker run --rm -it -v /path/to/your/devices.json:/app/config/devices.json -p 30030:30030 junos-mcp-server:latest python jmcp.py -f /app/config/devices.json -t streamable-http -H 0.0.0.0
+```
+
+**For streamable-http in stateless mode:**
+```bash
+$ docker run --rm -it -e JMCP_STATELESS=true -v /path/to/your/devices.json:/app/config/devices.json -p 30030:30030 junos-mcp-server:latest python jmcp.py -f /app/config/devices.json -t streamable-http -H 0.0.0.0
 ```
 
 **For streamable-http with custom port:**

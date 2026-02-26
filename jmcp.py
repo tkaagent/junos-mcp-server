@@ -620,6 +620,28 @@ def get_timeout_with_fallback(arguments_timeout: int = None) -> int:
     return 360
 
 
+def get_stateless_with_fallback(default: bool = False) -> bool:
+    """Get stateless mode from JMCP_STATELESS environment variable with safe fallback."""
+    env_stateless = os.getenv('JMCP_STATELESS')
+    if env_stateless is None:
+        return default
+
+    normalized_value = env_stateless.strip().lower()
+    truthy_values = {'1', 'true', 'yes', 'y', 'on'}
+    falsy_values = {'0', 'false', 'no', 'n', 'off'}
+
+    if normalized_value in truthy_values:
+        return True
+    if normalized_value in falsy_values:
+        return False
+
+    log.warning(
+        f"Invalid JMCP_STATELESS environment variable value: {env_stateless}. "
+        f"Using default stateless={default}."
+    )
+    return default
+
+
 def check_config_blocklist(config_text: str, block_file: str = "block.cfg") -> tuple[bool, str | None]:
     """Return whether the submitted config should be blocked based on tokenized regex patterns."""
     if not config_text:
@@ -1876,10 +1898,16 @@ def main():
         elif args.transport == 'streamable-http':
             # For streamable-http, create Starlette app with session manager
             async def run_streamable_http():
+                stateless_mode = get_stateless_with_fallback(default=False)
                 session_manager = StreamableHTTPSessionManager(
                     app=mcp_server,
                     event_store=None,  # No persistence
-                    stateless=False  # Keep sessions alive for elicitation!
+                    stateless=stateless_mode
+                )
+
+                log.info(
+                    f"Streamable HTTP session mode: {'stateless' if stateless_mode else 'stateful'} "
+                    f"(controlled by JMCP_STATELESS, default false)"
                 )
                 
                 # ASGI handler

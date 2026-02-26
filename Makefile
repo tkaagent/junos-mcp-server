@@ -1,47 +1,82 @@
-.PHONY: test test-all test-config test-router-list test-batch-command docker-build help clean
+.PHONY: test test-all test-config test-router-list test-batch-command test-discover test-unit build check-compile docker-build docker-build-no-cache help clean
 
 # Default target
 help:
 	@echo "Available targets:"
-	@echo "  make test                - Run all tests"
+	@echo "  make test                - Run full unittest discovery"
 	@echo "  make test-all            - Run all tests (alias for test)"
-	@echo "  make test-config         - Run config validation tests"
-	@echo "  make test-router-list    - Run get_router_list tests"
-	@echo "  make test-batch-command  - Run batch command example"
+	@echo "  make test-discover       - Run full unittest discovery"
+	@echo "  make test-unit           - Run unittest discovery (verbose)"
+	@echo "  make test-config         - Run config validation tests only"
+	@echo "  make test-router-list    - Run get_router_list tests only"
+	@echo "  make test-batch-command  - Run batch command tests only"
+	@echo "  make build               - Run Python compile checks"
+	@echo "  make check-compile       - Byte-compile Python files (syntax check)"
 	@echo "  make docker-build        - Build Docker image"
+	@echo "  make docker-build-no-cache - Build Docker image without cache"
 	@echo "  make clean               - Clean Python cache files"
 	@echo "  make help                - Show this help message"
 
-# Run all tests
-test: test-config test-router-list test-batch-command
+# Build target for compile-time validation
+build: check-compile
+	@echo ""
+	@echo "=========================================="
+	@echo "Build checks completed!"
+	@echo "=========================================="
+
+# Python compile check (catches syntax/compile-time errors)
+check-compile:
+	@echo "Running Python compile checks..."
+	@uv run python -m compileall -q jmcp.py jmcp_token_manager.py utils test test_*.py
+
+
+# Run full unittest discovery
+test: test-discover
 	@echo ""
 	@echo "=========================================="
 	@echo "All tests completed!"
 	@echo "=========================================="
 
-# Alias for test
-test-all: test
+# Explicit alias for full discovery
+test-discover:
+	@echo "Running full unittest discovery..."
+	@uv run python -m unittest discover -v
 
-# Run config validation tests
+# Backward-compatible alias
+test-unit: test-discover
+
+# Legacy targeted tests (kept for convenience)
 test-config:
 	@echo "Running config validation tests..."
 	@uv run python test_config_validation.py
 
-# Run get_router_list tests
 test-router-list:
 	@echo "Running get_router_list tests..."
 	@uv run python test_get_router_list.py
 
-# Run batch command example
 test-batch-command:
-	@echo "Running batch command example..."
+	@echo "Running batch command tests..."
 	@uv run python test_batch_command.py
+
+
+# Alias for test
+test-all: test
+	@echo ""
+	@echo "=========================================="
+	@echo "All tests completed!"
+	@echo "=========================================="
 
 # Build Docker image
 docker-build:
 	@echo "Building Docker image..."
 	docker build -t junos-mcp-server:latest .
 	@echo "Docker image built successfully: junos-mcp-server:latest"
+
+# Build Docker image without cache
+docker-build-no-cache:
+	@echo "Building Docker image without cache..."
+	docker build --no-cache -t junos-mcp-server:latest .
+	@echo "Docker image built successfully (no-cache): junos-mcp-server:latest"
 
 # Clean Python cache files
 clean:
